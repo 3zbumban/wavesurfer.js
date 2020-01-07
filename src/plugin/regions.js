@@ -29,6 +29,12 @@ class Region {
         this.isDragging = false;
         this.loop = Boolean(params.loop);
         this.color = params.color || 'rgba(0, 0, 0, 0.1)';
+        // The left and right handleStyle properties can be set to 'none' for
+        // no styling or can be assigned an object containing CSS properties.
+        this.handleStyle = params.handleStyle || {
+            left: {},
+            right: {}
+        };
         this.data = params.data || {};
         this.attributes = params.attributes || {};
 
@@ -40,6 +46,17 @@ class Region {
         this.scrollSpeed = params.scrollSpeed || 1;
         this.scrollThreshold = params.scrollThreshold || 10;
 
+        // select channel ID to set region
+        let channelIdx =
+            params.channelIdx == null ? -1 : parseInt(params.channelIdx);
+        this.regionHeight = '100%';
+        this.marginTop = '0px';
+        let channelCount = this.wavesurfer.backend.ac.destination.channelCount;
+        if (channelIdx >= 0 && channelIdx < channelCount) {
+            this.regionHeight = Math.floor((1 / channelCount) * 100) + '%';
+            this.marginTop = this.wavesurfer.getHeight() * channelIdx + 'px';
+        }
+
         this.bindInOut();
         this.render();
         this.wavesurfer.on('zoom', this._onRedraw);
@@ -49,34 +66,37 @@ class Region {
 
     /* Update region params. */
     update(params) {
-        if (null != params.start) {
+        if (params.start != null) {
             this.start = Number(params.start);
         }
-        if (null != params.end) {
+        if (params.end != null) {
             this.end = Number(params.end);
         }
-        if (null != params.loop) {
+        if (params.loop != null) {
             this.loop = Boolean(params.loop);
         }
-        if (null != params.color) {
+        if (params.color != null) {
             this.color = params.color;
         }
-        if (null != params.data) {
+        if (params.handleStyle != null) {
+            this.handleStyle = params.handleStyle;
+        }
+        if (params.data != null) {
             this.data = params.data;
         }
-        if (null != params.resize) {
+        if (params.resize != null) {
             this.resize = Boolean(params.resize);
         }
-        if (null != params.drag) {
+        if (params.drag != null) {
             this.drag = Boolean(params.drag);
         }
-        if (null != params.maxLength) {
+        if (params.maxLength != null) {
             this.maxLength = Number(params.maxLength);
         }
-        if (null != params.minLength) {
+        if (params.minLength != null) {
             this.minLength = Number(params.minLength);
         }
-        if (null != params.attributes) {
+        if (params.attributes != null) {
             this.attributes = params.attributes;
         }
 
@@ -120,6 +140,7 @@ class Region {
     /* Render a region as a DOM element. */
     render() {
         const regionEl = document.createElement('region');
+
         regionEl.className = 'wavesurfer-region';
         regionEl.title = this.formatTime(this.start, this.end);
         regionEl.setAttribute('data-id', this.id);
@@ -134,8 +155,8 @@ class Region {
         this.style(regionEl, {
             position: 'absolute',
             zIndex: 2,
-            height: '100%',
-            top: '0px'
+            height: this.regionHeight,
+            top: this.marginTop
         });
 
         /* Resize handles */
@@ -146,24 +167,42 @@ class Region {
             const handleRight = regionEl.appendChild(
                 document.createElement('handle')
             );
+
             handleLeft.className = 'wavesurfer-handle wavesurfer-handle-start';
             handleRight.className = 'wavesurfer-handle wavesurfer-handle-end';
+
+            // Default CSS properties for both handles.
             const css = {
                 cursor: 'col-resize',
                 position: 'absolute',
-                top: '0px',
+                top: this.marginTop,
                 width: '1%',
                 maxWidth: '4px',
-                height: '100%'
+                height: this.regionHeight,
+                backgroundColor: 'rgba(0, 0, 0, 1)'
             };
-            this.style(handleLeft, css);
-            this.style(handleLeft, {
-                left: '0px'
-            });
-            this.style(handleRight, css);
-            this.style(handleRight, {
-                right: '0px'
-            });
+
+            // Merge CSS properties per handle.
+            const handleLeftCss =
+                this.handleStyle.left !== 'none'
+                    ? Object.assign({ left: '0px' }, css, this.handleStyle.left)
+                    : null;
+            const handleRightCss =
+                this.handleStyle.right !== 'none'
+                    ? Object.assign(
+                          { right: '0px' },
+                          css,
+                          this.handleStyle.right
+                      )
+                    : null;
+
+            if (handleLeftCss) {
+                this.style(handleLeft, handleLeftCss);
+            }
+
+            if (handleRightCss) {
+                this.style(handleRight, handleRightCss);
+            }
         }
 
         this.element = this.wrapper.appendChild(regionEl);
@@ -303,222 +342,212 @@ class Region {
         });
 
         /* Drag or resize on mousemove. */
-        (this.drag || this.resize) &&
-            (() => {
-                const container = this.wavesurfer.drawer.container;
-                const scrollSpeed = this.scrollSpeed;
-                const scrollThreshold = this.scrollThreshold;
-                let startTime;
-                let touchId;
-                let drag;
-                let maxScroll;
-                let resize;
-                let updated = false;
-                let scrollDirection;
-                let wrapperRect;
+        if (this.drag || this.resize) {
+            this.bindDragEvents();
+        }
+    }
 
-                // Scroll when the user is dragging within the threshold
-                const edgeScroll = e => {
-                    const duration = this.wavesurfer.getDuration();
-                    if (!scrollDirection || (!drag && !resize)) {
-                        return;
-                    }
+    bindDragEvents() {
+        const container = this.wavesurfer.drawer.container;
+        const scrollSpeed = this.scrollSpeed;
+        const scrollThreshold = this.scrollThreshold;
+        let startTime;
+        let touchId;
+        let drag;
+        let maxScroll;
+        let resize;
+        let updated = false;
+        let scrollDirection;
+        let wrapperRect;
 
-                    // Update scroll position
-                    let scrollLeft =
-                        this.wrapper.scrollLeft + scrollSpeed * scrollDirection;
-                    this.wrapper.scrollLeft = scrollLeft = Math.min(
-                        maxScroll,
-                        Math.max(0, scrollLeft)
-                    );
+        // Scroll when the user is dragging within the threshold
+        const edgeScroll = e => {
+            const duration = this.wavesurfer.getDuration();
+            if (!scrollDirection || (!drag && !resize)) {
+                return;
+            }
 
-                    // Get the currently selected time according to the mouse position
-                    const time = this.wavesurfer.regions.util.getRegionSnapToGridValue(
-                        this.wavesurfer.drawer.handleEvent(e) * duration
-                    );
-                    const delta = time - startTime;
-                    startTime = time;
+            // Update scroll position
+            let scrollLeft =
+                this.wrapper.scrollLeft + scrollSpeed * scrollDirection;
+            this.wrapper.scrollLeft = scrollLeft = Math.min(
+                maxScroll,
+                Math.max(0, scrollLeft)
+            );
 
-                    // Continue dragging or resizing
-                    drag ? this.onDrag(delta) : this.onResize(delta, resize);
+            // Get the currently selected time according to the mouse position
+            const time = this.wavesurfer.regions.util.getRegionSnapToGridValue(
+                this.wavesurfer.drawer.handleEvent(e) * duration
+            );
+            const delta = time - startTime;
+            startTime = time;
 
-                    // Repeat
-                    window.requestAnimationFrame(() => {
-                        edgeScroll(e);
-                    });
-                };
+            // Continue dragging or resizing
+            drag ? this.onDrag(delta) : this.onResize(delta, resize);
 
-                const onDown = e => {
-                    const duration = this.wavesurfer.getDuration();
-                    if (e.touches && e.touches.length > 1) {
-                        return;
-                    }
-                    touchId = e.targetTouches
-                        ? e.targetTouches[0].identifier
-                        : null;
+            // Repeat
+            window.requestAnimationFrame(() => {
+                edgeScroll(e);
+            });
+        };
 
-                    // stop the event propagation, if this region is resizable or draggable
-                    // and the event is therefore handled here.
-                    if (this.drag || this.resize) {
-                        e.stopPropagation();
-                    }
+        const onDown = e => {
+            const duration = this.wavesurfer.getDuration();
+            if (e.touches && e.touches.length > 1) {
+                return;
+            }
+            touchId = e.targetTouches ? e.targetTouches[0].identifier : null;
 
-                    // Store the selected startTime we begun dragging or resizing
-                    startTime = this.wavesurfer.regions.util.getRegionSnapToGridValue(
-                        this.wavesurfer.drawer.handleEvent(e, true) * duration
-                    );
+            // stop the event propagation, if this region is resizable or draggable
+            // and the event is therefore handled here.
+            if (this.drag || this.resize) {
+                e.stopPropagation();
+            }
 
-                    // Store for scroll calculations
-                    maxScroll =
-                        this.wrapper.scrollWidth - this.wrapper.clientWidth;
-                    wrapperRect = this.wrapper.getBoundingClientRect();
+            // Store the selected startTime we begun dragging or resizing
+            startTime = this.wavesurfer.regions.util.getRegionSnapToGridValue(
+                this.wavesurfer.drawer.handleEvent(e, true) * duration
+            );
 
-                    this.isResizing = false;
-                    this.isDragging = false;
-                    if (e.target.tagName.toLowerCase() === 'handle') {
-                        this.isResizing = true;
-                        if (
-                            e.target.classList.contains(
-                                'wavesurfer-handle-start'
-                            )
-                        ) {
-                            resize = 'start';
-                        } else {
-                            resize = 'end';
-                        }
-                    } else {
-                        this.isDragging = true;
-                        drag = true;
-                        resize = false;
-                    }
-                };
-                const onUp = e => {
-                    if (e.touches && e.touches.length > 1) {
-                        return;
-                    }
+            // Store for scroll calculations
+            maxScroll = this.wrapper.scrollWidth - this.wrapper.clientWidth;
+            wrapperRect = this.wrapper.getBoundingClientRect();
 
-                    if (drag || resize) {
-                        this.isDragging = false;
-                        this.isResizing = false;
-                        drag = false;
-                        scrollDirection = null;
-                        resize = false;
-                    }
+            this.isResizing = false;
+            this.isDragging = false;
+            if (e.target.tagName.toLowerCase() === 'handle') {
+                this.isResizing = true;
+                resize = e.target.classList.contains('wavesurfer-handle-start')
+                    ? 'start'
+                    : 'end';
+            } else {
+                this.isDragging = true;
+                drag = true;
+                resize = false;
+            }
+        };
+        const onUp = e => {
+            if (e.touches && e.touches.length > 1) {
+                return;
+            }
 
-                    if (updated) {
-                        updated = false;
-                        this.util.preventClick();
-                        this.fireEvent('update-end', e);
-                        this.wavesurfer.fireEvent('region-update-end', this, e);
-                    }
-                };
-                const onMove = e => {
-                    const duration = this.wavesurfer.getDuration();
+            if (drag || resize) {
+                this.isDragging = false;
+                this.isResizing = false;
+                drag = false;
+                scrollDirection = null;
+                resize = false;
+            }
 
-                    if (e.touches && e.touches.length > 1) {
-                        return;
-                    }
-                    if (
-                        e.targetTouches &&
-                        e.targetTouches[0].identifier != touchId
+            if (updated) {
+                updated = false;
+                this.util.preventClick();
+                this.fireEvent('update-end', e);
+                this.wavesurfer.fireEvent('region-update-end', this, e);
+            }
+        };
+        const onMove = e => {
+            const duration = this.wavesurfer.getDuration();
+
+            if (e.touches && e.touches.length > 1) {
+                return;
+            }
+            if (e.targetTouches && e.targetTouches[0].identifier != touchId) {
+                return;
+            }
+            if (!drag && !resize) {
+                return;
+            }
+
+            const oldTime = startTime;
+            const time = this.wavesurfer.regions.util.getRegionSnapToGridValue(
+                this.wavesurfer.drawer.handleEvent(e) * duration
+            );
+
+            const delta = time - startTime;
+            startTime = time;
+
+            // Drag
+            if (this.drag && drag) {
+                updated = updated || !!delta;
+                this.onDrag(delta);
+            }
+
+            // Resize
+            if (this.resize && resize) {
+                updated = updated || !!delta;
+                this.onResize(delta, resize);
+            }
+
+            if (
+                this.scroll &&
+                container.clientWidth < this.wrapper.scrollWidth
+            ) {
+                if (drag) {
+                    // The threshold is not between the mouse and the container edge
+                    // but is between the region and the container edge
+                    const regionRect = this.element.getBoundingClientRect();
+                    let x = regionRect.left - wrapperRect.left;
+
+                    // Check direction
+                    if (time < oldTime && x >= 0) {
+                        scrollDirection = -1;
+                    } else if (
+                        time > oldTime &&
+                        x + regionRect.width <= wrapperRect.right
                     ) {
-                        return;
+                        scrollDirection = 1;
                     }
 
-                    if (drag || resize) {
-                        const oldTime = startTime;
-                        const time = this.wavesurfer.regions.util.getRegionSnapToGridValue(
-                            this.wavesurfer.drawer.handleEvent(e) * duration
-                        );
-
-                        const delta = time - startTime;
-                        startTime = time;
-
-                        // Drag
-                        if (this.drag && drag) {
-                            updated = updated || !!delta;
-                            this.onDrag(delta);
-                        }
-
-                        // Resize
-                        if (this.resize && resize) {
-                            updated = updated || !!delta;
-                            this.onResize(delta, resize);
-                        }
-
-                        if (
-                            this.scroll &&
-                            container.clientWidth < this.wrapper.scrollWidth
-                        ) {
-                            if (drag) {
-                                // The threshold is not between the mouse and the container edge
-                                // but is between the region and the container edge
-                                const regionRect = this.element.getBoundingClientRect();
-                                let x = regionRect.left - wrapperRect.left;
-
-                                // Check direction
-                                if (time < oldTime && x >= 0) {
-                                    scrollDirection = -1;
-                                } else if (
-                                    time > oldTime &&
-                                    x + regionRect.width <= wrapperRect.right
-                                ) {
-                                    scrollDirection = 1;
-                                }
-
-                                // Check that we are still beyond the threshold
-                                if (
-                                    (scrollDirection === -1 &&
-                                        x > scrollThreshold) ||
-                                    (scrollDirection === 1 &&
-                                        x + regionRect.width <
-                                            wrapperRect.right - scrollThreshold)
-                                ) {
-                                    scrollDirection = null;
-                                }
-                            } else {
-                                // Mouse based threshold
-                                let x = e.clientX - wrapperRect.left;
-
-                                // Check direction
-                                if (x <= scrollThreshold) {
-                                    scrollDirection = -1;
-                                } else if (
-                                    x >=
-                                    wrapperRect.right - scrollThreshold
-                                ) {
-                                    scrollDirection = 1;
-                                } else {
-                                    scrollDirection = null;
-                                }
-                            }
-
-                            scrollDirection && edgeScroll(e);
-                        }
+                    // Check that we are still beyond the threshold
+                    if (
+                        (scrollDirection === -1 && x > scrollThreshold) ||
+                        (scrollDirection === 1 &&
+                            x + regionRect.width <
+                                wrapperRect.right - scrollThreshold)
+                    ) {
+                        scrollDirection = null;
                     }
-                };
+                } else {
+                    // Mouse based threshold
+                    let x = e.clientX - wrapperRect.left;
 
-                this.element.addEventListener('mousedown', onDown);
-                this.element.addEventListener('touchstart', onDown);
+                    // Check direction
+                    if (x <= scrollThreshold) {
+                        scrollDirection = -1;
+                    } else if (x >= wrapperRect.right - scrollThreshold) {
+                        scrollDirection = 1;
+                    } else {
+                        scrollDirection = null;
+                    }
+                }
 
-                this.wrapper.addEventListener('mousemove', onMove);
-                this.wrapper.addEventListener('touchmove', onMove);
+                if (scrollDirection) {
+                    edgeScroll(e);
+                }
+            }
+        };
 
-                document.body.addEventListener('mouseup', onUp);
-                document.body.addEventListener('touchend', onUp);
+        this.element.addEventListener('mousedown', onDown);
+        this.element.addEventListener('touchstart', onDown);
 
-                this.on('remove', () => {
-                    document.body.removeEventListener('mouseup', onUp);
-                    document.body.removeEventListener('touchend', onUp);
-                    this.wrapper.removeEventListener('mousemove', onMove);
-                    this.wrapper.removeEventListener('touchmove', onMove);
-                });
+        this.wrapper.addEventListener('mousemove', onMove);
+        this.wrapper.addEventListener('touchmove', onMove);
 
-                this.wavesurfer.on('destroy', () => {
-                    document.body.removeEventListener('mouseup', onUp);
-                    document.body.removeEventListener('touchend', onUp);
-                });
-            })();
+        document.body.addEventListener('mouseup', onUp);
+        document.body.addEventListener('touchend', onUp);
+
+        this.on('remove', () => {
+            document.body.removeEventListener('mouseup', onUp);
+            document.body.removeEventListener('touchend', onUp);
+            this.wrapper.removeEventListener('mousemove', onMove);
+            this.wrapper.removeEventListener('touchmove', onMove);
+        });
+
+        this.wavesurfer.on('destroy', () => {
+            document.body.removeEventListener('mouseup', onUp);
+            document.body.removeEventListener('touchend', onUp);
+        });
     }
 
     onDrag(delta) {
@@ -573,6 +602,7 @@ class Region {
  * @property {boolean} drag=true Allow/disallow dragging the region.
  * @property {boolean} resize=true Allow/disallow resizing the region.
  * @property {string} [color='rgba(0, 0, 0, 0.1)'] HTML color code.
+ * @property {?number} channelIdx Select channel to draw the region on (if there are multiple channel waveforms).
  */
 
 /**
@@ -650,11 +680,13 @@ export default class RegionsPlugin {
     constructor(params, ws) {
         this.params = params;
         this.wavesurfer = ws;
-        this.util = ws.util;
-        this.maxRegions = params.maxRegions;
-        this.util.getRegionSnapToGridValue = value => {
-            return this.getRegionSnapToGridValue(value, params);
+        this.util = {
+            ...ws.util,
+            getRegionSnapToGridValue: value => {
+                return this.getRegionSnapToGridValue(value, params);
+            }
         };
+        this.maxRegions = params.maxRegions;
 
         // turn the plugin instance into an observer
         const observerPrototypeKeys = Object.getOwnPropertyNames(
@@ -746,6 +778,8 @@ export default class RegionsPlugin {
     }
 
     enableDragSelection(params) {
+        this.disableDragSelection();
+
         const slop = params.slop || 2;
         const container = this.wavesurfer.drawer.container;
         const scroll =
