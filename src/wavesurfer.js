@@ -455,6 +455,8 @@ export default class WaveSurfer extends util.Observer {
         let prevWidth = 0;
         this._onResize = util.debounce(
             () => {
+                // eslint-disable-next-line no-console
+                console.log('_onResize event fired');
                 if (
                     prevWidth != this.drawer.wrapper.clientWidth &&
                     !this.params.scrollParent
